@@ -22,6 +22,7 @@ class AdminDashboardScreen extends StatefulWidget {
 class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   List<UserAccount> accounts = [];
   Map<String, UserProgress> progressByEmail = {};
+  final Set<String> _deletedAccountUids = {};
   StreamSubscription<List<UserAccount>>? _accountsSubscription;
   int _accountRosterRevision = 0;
   bool isLoading = true;
@@ -32,7 +33,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _accountsSubscription = AuthService.watchAccounts().listen(
       (loaded) {
         _accountRosterRevision++;
-        if (mounted) setState(() => accounts = loaded);
+        final visibleAccounts = loaded
+            .where((account) => !_deletedAccountUids.contains(account.uid))
+            .toList();
+        if (mounted) setState(() => accounts = visibleAccounts);
       },
       onError: (Object error, StackTrace stackTrace) {
         debugPrint('Unable to watch admin account roster: $error');
@@ -44,11 +48,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _loadAccounts();
   }
 
-  Future<bool> _loadAccounts() async {
+  Future<bool> _loadAccounts({bool forceServer = false}) async {
     if (mounted) setState(() => isLoading = true);
     final rosterRevision = _accountRosterRevision;
     try {
-      final loaded = await AuthService.loadAccounts();
+      final loaded = (await AuthService.loadAccounts(forceServer: forceServer))
+          .where((account) => !_deletedAccountUids.contains(account.uid))
+          .toList();
       final progressEntries = await Future.wait(loaded.map((account) async {
         final progress =
             await UserProgressService.getProgressForUid(account.uid);
@@ -247,7 +253,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Future<void> _deleteAccount(UserAccount account) async {
     try {
       await AuthService.deleteAccount(account);
-      final rosterLoaded = await _loadAccounts();
+      _deletedAccountUids.add(account.uid);
+      if (mounted) {
+        setState(() {
+          accounts.removeWhere((loaded) => loaded.uid == account.uid);
+          progressByEmail.remove(account.email);
+        });
+      }
+      final rosterLoaded = await _loadAccounts(forceServer: true);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -256,10 +269,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                 ? 'Account deleted.'
                 : 'Account deleted, but the account list could not be refreshed.',
           ),
-          backgroundColor: rosterLoaded ? Colors.red : Colors.orange,
+          backgroundColor: rosterLoaded ? Colors.green : Colors.orange,
         ),
       );
-    } on FirebaseFunctionsException catch (error, stackTrace) {
+    } on FirebaseException catch (error, stackTrace) {
       debugPrint(
         'Unable to delete account ${account.uid} '
         '(${error.code}): ${error.message}',
@@ -270,7 +283,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         SnackBar(
           content: Text(
             'Could not delete the account (${error.code}): '
-            '${error.message ?? 'No server detail provided.'}',
+            '${error.message ?? 'Firestore rejected the delete request.'}',
           ),
           backgroundColor: Colors.red,
         ),
@@ -280,8 +293,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       debugPrintStack(stackTrace: stackTrace);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not delete the account. Please retry.'),
+        SnackBar(
+          content: Text('Could not delete the account: $error'),
           backgroundColor: Colors.red,
         ),
       );

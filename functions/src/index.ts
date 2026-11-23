@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { getAuth } from "firebase-admin/auth";
 import { initializeApp } from "firebase-admin/app";
+import { getStorage } from "firebase-admin/storage";
 import {
+  DocumentReference,
   DocumentSnapshot,
   FieldPath,
   FieldValue,
@@ -476,65 +478,204 @@ export const deleteStudentAccount = onCall(async (request) => {
   }
 
   const userRef = db.collection("users").doc(targetUid);
-  await db.runTransaction(async (transaction) => {
-    const [targetSnapshot, counterSnapshot] = await Promise.all([
-      transaction.get(userRef),
-      transaction.get(studentNumberCounterRef),
-    ]);
-    if (!targetSnapshot.exists) {
-      throw new HttpsError("not-found", "The account no longer exists.");
-    }
-    const target = targetSnapshot.data()!;
-    if (!["student", "teacher"].includes(String(target.role).toLowerCase())) {
-      throw new HttpsError(
-        "permission-denied",
-        "Administrator accounts cannot be deleted here.",
-      );
-    }
-
-    let remainingStudents: DocumentSnapshot[] = [];
-    if (target.role === "student") {
-      const students = await transaction.get(
-        db.collection("users").where("role", "==", "student"),
-      );
-      remainingStudents = students.docs.filter(
-        (student) => student.id !== targetUid,
-      );
-    }
-
-    const lrn = typeof target.lrn === "string" ? target.lrn.trim() : "";
-    const lrnRefs =
-      /^\d{12}$/.test(lrn)
-        ? [
-            db.collection("lrnIndexes").doc(lrnIndexId(lrn)),
-            db.collection("lrnIndexes").doc(lrn),
-          ]
-        : [];
-    const lrnSnapshots = await Promise.all(
-      lrnRefs.map((reference) => transaction.get(reference)),
+  const targetSnapshot = await userRef.get();
+  const target = targetSnapshot.data();
+  if (
+    targetSnapshot.exists &&
+    !["student", "teacher"].includes(String(target?.role).toLowerCase())
+  ) {
+    throw new HttpsError(
+      "permission-denied",
+      "Administrator accounts cannot be deleted here.",
     );
+  }
 
-    transaction.delete(userRef);
-    transaction.delete(db.collection("activeSessions").doc(targetUid));
-    if (
-      target.role === "student" &&
-      remainingStudents.length === 0 &&
-      counterSnapshot.exists &&
-      counterSnapshot.data()?.migrationState === "complete"
-    ) {
-      transaction.update(studentNumberCounterRef, {
-        lastNumber: 0,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-    }
-    for (const [index, snapshot] of lrnSnapshots.entries()) {
-      if (snapshot.data()?.uid === targetUid) {
-        transaction.delete(lrnRefs[index]);
+  let authenticationAccountExists = false;
+  let authenticationAccountCouldNotBeVerified = false;
+  if (!targetSnapshot.exists) {
+    try {
+      await getAuth().getUser(targetUid);
+      authenticationAccountExists = true;
+    } catch (error) {
+      if (typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "auth/user-not-found") {
+        authenticationAccountExists = false;
+      } else {
+        authenticationAccountCouldNotBeVerified = true;
+        logger.error("Unable to verify the Authentication account", {
+          uid: targetUid,
+          error,
+        });
       }
     }
+  }
+
+  const cleanupErrors: unknown[] = [];
+  const activeSessionRef = db.collection("activeSessions").doc(targetUid);
+  try {
+    await activeSessionRef.delete();
+  } catch (error) {
+    cleanupErrors.push(error);
+    logger.error("Unable to remove the account's active session", {
+      uid: targetUid,
+      error,
+    });
+  }
+
+  const userCollections = await userRef.listCollections().catch((error) => {
+    cleanupErrors.push(error);
+    logger.error("Unable to list the account's subcollections", {
+      uid: targetUid,
+      error,
+    });
+    return [];
   });
+  const cleanupTasks: Promise<unknown>[] = [
+    db.recursiveDelete(db.collection("leaderboard").doc(targetUid)),
+    deleteLegacyProfilePhoto(targetUid, target?.profilePhotoUrl),
+    deleteLrnIndexesForUid(
+      targetUid,
+      typeof target?.lrn === "string" ? target.lrn.trim() : "",
+    ),
+    ...userCollections.map((collection) => db.recursiveDelete(collection)),
+  ];
+  const cleanupResults = await Promise.allSettled(cleanupTasks);
+  for (const result of cleanupResults) {
+    if (result.status === "rejected") {
+      cleanupErrors.push(result.reason);
+    }
+  }
+  if (cleanupErrors.length > 0) {
+    logger.error("Some account data could not be removed", {
+      uid: targetUid,
+      errors: cleanupErrors,
+    });
+    throw new HttpsError(
+      "internal",
+      "Some account data could not be removed. Retry the deletion.",
+    );
+  }
+
+  if (authenticationAccountCouldNotBeVerified) {
+    throw new HttpsError(
+      "internal",
+      "The Authentication account could not be verified. Retry the deletion.",
+    );
+  }
+  if (!targetSnapshot.exists && authenticationAccountExists) {
+    throw new HttpsError(
+      "failed-precondition",
+      "The account profile is missing, so its role cannot be verified.",
+    );
+  }
+
+  if (targetSnapshot.exists) {
+    try {
+      await getAuth().deleteUser(targetUid);
+    } catch (error) {
+      const authenticationUserWasAlreadyRemoved =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "auth/user-not-found";
+      if (!authenticationUserWasAlreadyRemoved) {
+        logger.error("Unable to delete the Firebase Authentication account", {
+          uid: targetUid,
+          error,
+        });
+        throw new HttpsError(
+          "internal",
+          "The Authentication account could not be deleted. Retry the deletion.",
+        );
+      }
+    }
+  }
+
+  if (targetSnapshot.exists) {
+    await db.runTransaction(async (transaction) => {
+      const currentSnapshot = await transaction.get(userRef);
+      if (!currentSnapshot.exists) return;
+
+      const counterSnapshot = await transaction.get(studentNumberCounterRef);
+      const currentTarget = currentSnapshot.data()!;
+      let remainingStudents: DocumentSnapshot[] = [];
+      if (currentTarget.role === "student") {
+        const students = await transaction.get(
+          db.collection("users").where("role", "==", "student"),
+        );
+        remainingStudents = students.docs.filter(
+          (student) => student.id !== targetUid,
+        );
+      }
+
+      transaction.delete(userRef);
+      if (
+        currentTarget.role === "student" &&
+        remainingStudents.length === 0 &&
+        counterSnapshot.exists &&
+        counterSnapshot.data()?.migrationState === "complete"
+      ) {
+        transaction.update(studentNumberCounterRef, {
+          lastNumber: 0,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+    });
+  }
+
   return { deleted: true };
 });
+
+async function deleteLegacyProfilePhoto(
+  uid: string,
+  photoUrl: unknown,
+): Promise<void> {
+  if (
+    typeof photoUrl !== "string" ||
+    (!photoUrl.startsWith("gs://") &&
+      !photoUrl.startsWith("https://firebasestorage.googleapis.com/"))
+  ) {
+    return;
+  }
+
+  await getStorage()
+    .bucket()
+    .file(`profiles/${uid}/profile-photo`)
+    .delete({ ignoreNotFound: true });
+}
+
+async function deleteLrnIndexesForUid(
+  uid: string,
+  lrn: string,
+): Promise<void> {
+  const refs = new Map<string, DocumentReference>();
+  const matchingIndexes = await db
+    .collection("lrnIndexes")
+    .where("uid", "==", uid)
+    .get();
+  for (const snapshot of matchingIndexes.docs) {
+    refs.set(snapshot.ref.path, snapshot.ref);
+  }
+
+  if (/^\d{12}$/.test(lrn)) {
+    const candidates = [
+      db.collection("lrnIndexes").doc(lrnIndexId(lrn)),
+      db.collection("lrnIndexes").doc(lrn),
+    ];
+    const snapshots = await Promise.all(
+      candidates.map((reference) => reference.get()),
+    );
+    for (const [index, snapshot] of snapshots.entries()) {
+      if (snapshot.data()?.uid === uid) {
+        refs.set(snapshot.ref.path, candidates[index]);
+      }
+    }
+  }
+
+  await Promise.all(Array.from(refs.values(), (reference) => reference.delete()));
+}
 
 export const completeFirstTimeTutorial = onCall(async (request) => {
   const uid = await requireCurrentSession(request);

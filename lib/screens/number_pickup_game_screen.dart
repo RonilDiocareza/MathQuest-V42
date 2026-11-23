@@ -1135,53 +1135,57 @@ class _NumberPickupGameScreenState extends State<NumberPickupGameScreen> {
               fit: StackFit.expand,
               children: [
                 Positioned.fill(
-                  child: FloatingGameJoystick(
-                    size: directionContainerSize,
-                    enabled: !_showGameModeIntroOverlay &&
-                        !gameInstance.isMovementPaused,
-                    onJoystickChanged: _handleJoystickChanged,
-                    onJoystickEnd: gameInstance.stopMove,
-                    child: Focus(
-                      autofocus: true,
-                      child: GameWidget(
-                        game: gameInstance,
-                        loadingBuilder: (_) => _buildLoadingState(),
-                        errorBuilder: (context, error) => Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.error_outline,
-                                  color: Colors.white,
-                                  size: 48,
-                                ),
-                                const SizedBox(height: 12),
-                                const Text(
-                                  'Unable to load Game Mode.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: gameInstance.movementPauseState,
+                    builder: (context, isMovementPaused, _) =>
+                        FloatingGameJoystick(
+                      size: directionContainerSize,
+                      enabled: !_showGameModeIntroOverlay && !isMovementPaused,
+                      onJoystickChanged: _handleJoystickChanged,
+                      onJoystickEnd: gameInstance.stopMove,
+                      child: Focus(
+                        autofocus: true,
+                        child: GameWidget(
+                          game: gameInstance,
+                          loadingBuilder: (_) => _buildLoadingState(),
+                          errorBuilder: (context, error) => Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.error_outline,
                                     color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
+                                    size: 48,
                                   ),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  error.toString(),
-                                  maxLines: 3,
-                                  overflow: TextOverflow.ellipsis,
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(color: Colors.white70),
-                                ),
-                                const SizedBox(height: 12),
-                                TextButton(
-                                  onPressed: _showExitDialog,
-                                  child: const Text(
-                                      'Return to the previous screen'),
-                                ),
-                              ],
+                                  const SizedBox(height: 12),
+                                  const Text(
+                                    'Unable to load Game Mode.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    error.toString(),
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style:
+                                        const TextStyle(color: Colors.white70),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  TextButton(
+                                    onPressed: _showExitDialog,
+                                    child: const Text(
+                                        'Return to the previous screen'),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),

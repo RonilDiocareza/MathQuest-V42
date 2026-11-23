@@ -60,6 +60,7 @@ const occupiedLrnStudentId = 'occupied-lrn-student';
 const pendingProfileStudentId = 'pending-profile-student';
 const rejectedProfileStudentId = 'rejected-profile-student';
 const adminRosterId = 'approval-workflow-admin';
+const accountDeletionStudentId = 'account-deletion-target';
 const approvalWorkflowStudentId = 'approval-workflow-pending';
 const rejectionWorkflowStudentId = 'rejection-workflow-pending';
 const legacyRosterStudentId = 'legacy-roster-student';
@@ -865,6 +866,37 @@ try {
       .data().status,
     'approved',
   );
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'users', accountDeletionStudentId), {
+      ...student(accountDeletionStudentId),
+    });
+    await setDoc(doc(db, 'activeSessions', accountDeletionStudentId), {
+      sessionId: 'target-student-session',
+    });
+  });
+  const accountDeletionBatch = writeBatch(adminDb);
+  accountDeletionBatch.delete(doc(adminDb, 'users', accountDeletionStudentId));
+  accountDeletionBatch.delete(
+    doc(adminDb, 'activeSessions', accountDeletionStudentId),
+  );
+  await assertSucceeds(accountDeletionBatch.commit());
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    assert.equal(
+      (await getDoc(doc(db, 'users', accountDeletionStudentId))).exists(),
+      false,
+    );
+    assert.equal(
+      (await getDoc(doc(db, 'activeSessions', accountDeletionStudentId)))
+        .exists(),
+      false,
+    );
+    assert.equal(
+      (await getDoc(doc(db, 'users', rejectionWorkflowStudentId))).exists(),
+      true,
+    );
+  });
   await testEnv.withSecurityRulesDisabled(async (context) => {
     await setDoc(
       doc(context.firestore(), 'activeSessions', approvalWorkflowStudentId),

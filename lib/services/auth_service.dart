@@ -819,8 +819,13 @@ class AuthService {
     return UserAccount.fromJson({...snapshot.data()!, 'uid': snapshot.id});
   }
 
-  static Future<List<UserAccount>> loadAccounts() async {
-    final snapshot = await _users.orderBy('name').get();
+  static Future<List<UserAccount>> loadAccounts({
+    bool forceServer = false,
+  }) async {
+    final query = _users.orderBy('name');
+    final snapshot = forceServer
+        ? await query.get(const GetOptions(source: Source.server))
+        : await query.get();
     return snapshot.docs
         .map((doc) => UserAccount.fromJson({...doc.data(), 'uid': doc.id}))
         .toList();
@@ -967,13 +972,28 @@ class AuthService {
   }
 
   static Future<void> deleteAccount(UserAccount account) async {
-    final result = await _functions
-        .httpsCallable('deleteStudentAccount')
-        .call<Map<String, dynamic>>({'uid': account.uid});
-    if (result.data['deleted'] != true) {
-      throw StateError(
-          'The account deletion service did not confirm deletion.');
+    final uid = account.uid.trim();
+    if (uid.isEmpty || uid.contains('/')) {
+      throw ArgumentError.value(account.uid, 'account.uid');
     }
+
+    final userRef = _users.doc(uid);
+    final snapshot = await userRef.get(
+      const GetOptions(source: Source.server),
+    );
+    if (!snapshot.exists) {
+      throw StateError('The selected account no longer exists.');
+    }
+
+    final role = snapshot.data()?['role']?.toString().toLowerCase();
+    if (role != 'student' && role != 'teacher') {
+      throw StateError('Only student or teacher accounts can be deleted here.');
+    }
+
+    final batch = FirebaseFirestore.instance.batch()
+      ..delete(userRef)
+      ..delete(_sessions.doc(uid));
+    await batch.commit();
   }
 
   static Future<void> updateCurrentProfile({

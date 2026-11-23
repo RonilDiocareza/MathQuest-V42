@@ -9,6 +9,7 @@ import 'package:flutter_mathquest/game/math_world_game.dart';
 import 'package:flutter_mathquest/game/npc_question.dart';
 import 'package:flutter_mathquest/game/question_npc.dart';
 import 'package:flutter_mathquest/screens/number_pickup_game_screen.dart';
+import 'package:flutter_mathquest/widgets/game_joystick.dart';
 import 'package:just_audio_platform_interface/method_channel_just_audio.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -289,6 +290,37 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
     expect(find.byType(Dialog), findsNothing);
+    final joystick = tester.widget<FloatingGameJoystick>(
+      find.byType(FloatingGameJoystick),
+    );
+    expect(joystick.enabled, isTrue);
+
+    Future<void> dragJoystick(Offset delta, Offset expectedDirection) async {
+      const center = Offset(400, 220);
+      final gesture = await tester.startGesture(center);
+      await gesture.moveTo(center + delta);
+      await tester.pump();
+      expect(
+        game.player.moveDirection.x,
+        closeTo(expectedDirection.dx, 0.01),
+      );
+      expect(
+        game.player.moveDirection.y,
+        closeTo(expectedDirection.dy, 0.01),
+      );
+      await gesture.up();
+      await tester.pump();
+    }
+
+    await dragJoystick(const Offset(40, 0), const Offset(0.73, 0));
+    await dragJoystick(const Offset(-40, 0), const Offset(-0.73, 0));
+    await dragJoystick(const Offset(0, -40), const Offset(0, -0.73));
+    await dragJoystick(const Offset(0, 40), const Offset(0, 0.73));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    expect(game.player.moveDirection.x, 1);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
 
     for (var attempt = 2; attempt <= 3; attempt++) {
       game.player.position
@@ -328,6 +360,16 @@ void main() {
           await tester.pump(const Duration(milliseconds: 100));
         }
         expect(game.isMovementPaused, isFalse);
+        expect(find.byIcon(Icons.favorite), findsOneWidget);
+        expect(
+          tester
+              .widget<FloatingGameJoystick>(
+                find.byType(FloatingGameJoystick),
+              )
+              .enabled,
+          isTrue,
+        );
+        await dragJoystick(const Offset(40, 0), const Offset(0.73, 0));
       }
     }
 

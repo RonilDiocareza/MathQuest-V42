@@ -350,6 +350,39 @@ try {
     sessionId: 'test-session-identifier-1234567890123456',
     claimedAt: serverTimestamp(),
   });
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    for (const [collection, documentId] of [
+      ['profileData', 'photo'],
+      ['classroomQuestAttempts', 'attempt-1'],
+      ['classroomQuestDailyCompletions', '2026-11-23'],
+      ['gameModeAttempts', 'attempt-1'],
+      ['problemLevelAttempts', 'attempt-1'],
+      ['scoreAwards', 'game-mode-1'],
+      ['legacyNestedRecords', 'record-1'],
+    ]) {
+      await setDoc(
+        doc(db, 'users', firstStudent.uid, collection, documentId),
+        { uid: firstStudent.uid },
+      );
+    }
+    await setDoc(
+      doc(db, 'users', secondStudent.uid, 'gameModeAttempts', 'other-attempt'),
+      { uid: secondStudent.uid },
+    );
+    await setDoc(doc(db, 'activeSessions', secondStudent.uid), {
+      sessionId: 'other-student-session',
+    });
+    await setDoc(doc(db, 'leaderboard', secondStudent.uid), {
+      uid: secondStudent.uid,
+    });
+    await setDoc(doc(db, 'lrnIndexes', 'target-student-index'), {
+      uid: firstStudent.uid,
+    });
+    await setDoc(doc(db, 'lrnIndexes', 'other-student-index'), {
+      uid: secondStudent.uid,
+    });
+  });
   await expectPermissionDenied(
     updateDoc(doc(studentDb, 'users', firstStudent.uid), {
       studentNo: '999',
@@ -370,7 +403,82 @@ try {
     uid: firstStudent.uid,
   });
   assert.equal(singleDeletion.deleted, true);
-  assert.equal((await getDoc(doc(adminDb, 'users', firstStudent.uid))).exists(), false);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    assert.equal((await getDoc(doc(db, 'users', firstStudent.uid))).exists(), false);
+    for (const [collection, documentId] of [
+      ['profileData', 'photo'],
+      ['classroomQuestAttempts', 'attempt-1'],
+      ['classroomQuestDailyCompletions', '2026-11-23'],
+      ['gameModeAttempts', 'attempt-1'],
+      ['problemLevelAttempts', 'attempt-1'],
+      ['scoreAwards', 'game-mode-1'],
+      ['legacyNestedRecords', 'record-1'],
+    ]) {
+      assert.equal(
+        (
+          await getDoc(
+            doc(db, 'users', firstStudent.uid, collection, documentId),
+          )
+        ).exists(),
+        false,
+        `${collection}/${documentId} should be deleted`,
+      );
+    }
+    assert.equal(
+      (await getDoc(doc(db, 'activeSessions', firstStudent.uid))).exists(),
+      false,
+    );
+    assert.equal(
+      (await getDoc(doc(db, 'leaderboard', firstStudent.uid))).exists(),
+      false,
+    );
+    assert.equal((await getDoc(doc(db, 'users', secondStudent.uid))).exists(), true);
+    assert.equal(
+      (
+        await getDoc(
+          doc(
+            db,
+            'users',
+            secondStudent.uid,
+            'gameModeAttempts',
+            'other-attempt',
+          ),
+        )
+      ).exists(),
+      true,
+    );
+    assert.equal(
+      (await getDoc(doc(db, 'activeSessions', secondStudent.uid))).exists(),
+      true,
+    );
+    assert.equal(
+      (await getDoc(doc(db, 'leaderboard', secondStudent.uid))).exists(),
+      true,
+    );
+    assert.equal(
+      (await getDoc(doc(db, 'lrnIndexes', 'target-student-index'))).exists(),
+      false,
+    );
+    assert.equal(
+      (await getDoc(doc(db, 'lrnIndexes', 'other-student-index'))).exists(),
+      true,
+    );
+  });
+  await signOut(studentAuth);
+  await assert.rejects(
+    signInWithEmailAndPassword(
+      studentAuth,
+      firstStudent.email,
+      'test-password-123',
+    ),
+    (error) => error.code === 'auth/user-not-found',
+  );
+  await simultaneousAuth.currentUser.reload();
+  const deletionRetry = await callable(adminAuth, 'deleteStudentAccount', {
+    uid: firstStudent.uid,
+  });
+  assert.equal(deletionRetry.deleted, true);
   assert.equal(
     (await getDoc(doc(adminDb, 'users', secondStudent.uid))).data().studentNo,
     secondStudent.studentNo,
@@ -409,7 +517,7 @@ try {
   );
 
   await signOut(legacyAuth);
-  await signInWithEmailAndPassword(
+  const recreatedCredential = await createUserWithEmailAndPassword(
     legacyAuth,
     legacyEmail,
     'test-password-123',
@@ -421,12 +529,14 @@ try {
   });
   assert.equal(recreated.studentNo, '1');
   assert.equal(
-    (await getDoc(doc(legacyDb, 'users', legacyUid))).data().profilePhotoUrl,
+    (
+      await getDoc(doc(legacyDb, 'users', recreatedCredential.user.uid))
+    ).data().profilePhotoUrl,
     'assets/images/player/Pride Masc.png',
   );
 
   console.log(
-    'PASS: sequential migration and registration, pending login restrictions, approval/rejection number preservation, concurrent uniqueness, idempotent retry, protected Student Nos./counter, single-delete retention, full-reset numbering, role exclusion, and Auth account preservation.',
+    'PASS: registration, student account and nested-data deletion, Authentication removal, idempotent deletion retry, unaffected student preservation, Student No. retention, and administrator protection.',
   );
 } catch (error) {
   console.error(`Registration emulator test failed during ${stage}:`, error);

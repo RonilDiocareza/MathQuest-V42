@@ -43,7 +43,8 @@ class MathWorldGame extends FlameGame
   double mapHeight = 640;
 
   bool isGameLoaded = false;
-  bool isMovementPaused = false;
+  final ValueNotifier<bool> movementPauseState = ValueNotifier(false);
+  bool get isMovementPaused => movementPauseState.value;
   bool hasCollectedCorrectAnswer = false;
   final ValueNotifier<bool> readiness = ValueNotifier(false);
   final Set<int> completedNpcQuestions = {};
@@ -495,6 +496,7 @@ class MathWorldGame extends FlameGame
   @override
   void onRemove() {
     readiness.dispose();
+    movementPauseState.dispose();
     super.onRemove();
   }
 
@@ -822,7 +824,7 @@ class MathWorldGame extends FlameGame
   }
 
   void pauseWorld() {
-    isMovementPaused = true;
+    movementPauseState.value = true;
     if (!isGameLoaded) return;
     stopMove();
     player.lastMove.setZero();
@@ -830,7 +832,7 @@ class MathWorldGame extends FlameGame
   }
 
   void resumeWorld() {
-    isMovementPaused = false;
+    movementPauseState.value = false;
     if (!isGameLoaded) return;
     player.moveDirection.setZero();
     player.isMoving = false;
